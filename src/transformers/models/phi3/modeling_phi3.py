@@ -201,18 +201,28 @@ class Phi3LongRoPEScaledRotaryEmbedding(Phi3RotaryEmbedding):
         self.long_factor = config.rope_scaling["long_factor"]
         self.original_max_position_embeddings = config.original_max_position_embeddings
 
+        inv_freq_shape = torch.arange(0, self.dim, 2, dtype=torch.int64, device=device).float() / self.dim
+        inv_freq_long = 1.0 / (
+            torch.tensor(self.long_factor, dtype=torch.float32, device=device)
+            * self.base ** inv_freq_shape
+        )
+        self.register_buffer("inv_freq_long", inv_freq_long, persistent=False)
+
+        inv_freq_short = 1.0 / (
+            torch.tensor(self.short_factor, dtype=torch.float32, device=device)
+            * self.base ** inv_freq_shape
+        )
+        self.register_buffer("inv_freq_short", inv_freq_short, persistent=False)
+            
+
     @torch.no_grad()
     def forward(self, x, position_ids, seq_len=None):
         seq_len = seq_len or torch.max(position_ids) + 1
         if seq_len > self.original_max_position_embeddings:
-            ext_factors = torch.tensor(self.long_factor, dtype=torch.float32, device=x.device)
+            inv_freq_expanded = self.inv_freq_long[None, :, None].float().expand(position_ids.shape[0], -1, 1)
         else:
-            ext_factors = torch.tensor(self.short_factor, dtype=torch.float32, device=x.device)
+            inv_freq_expanded = self.inv_freq_short[None, :, None].float().expand(position_ids.shape[0], -1, 1)
 
-        inv_freq_shape = torch.arange(0, self.dim, 2, dtype=torch.int64, device=x.device).float() / self.dim
-        self.inv_freq = 1.0 / (ext_factors * self.base**inv_freq_shape)
-
-        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
         position_ids_expanded = position_ids[:, None, :].float()
 
         # Force float32 since bfloat16 loses precision on long contexts
@@ -232,7 +242,6 @@ class Phi3LongRoPEScaledRotaryEmbedding(Phi3RotaryEmbedding):
             cos = emb.cos() * scaling_factor
             sin = emb.sin() * scaling_factor
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
-
 
 # Copied from transformers.models.llama.modeling_llama.rotate_half
 def rotate_half(x):
